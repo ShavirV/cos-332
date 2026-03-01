@@ -2,6 +2,7 @@
  * Telnet Appointment Server
  * uses fork() for multi-user
  * single shared binary database, stored in appointments.db
+ * ANSI UI
  */
 
 #include <stdio.h>
@@ -62,11 +63,15 @@ static void readLine(int fd, char *buf, size_t sz) {
                 char discard;
                 read(fd, &discard, 1);
             }
-            write(fd, "\r\n", 2); //echo newline
+            write(fd, "\r\n", 2); //echo newline back to client
+            printf("[client] %s\n", buf); //mirror completed input to server terminal
+            fflush(stdout);
             break;
         }
         if (c == '\n') { //bare newline fallback
             write(fd, "\r\n", 2);
+            printf("[client] %s\n", buf); //mirror completed input to server terminal
+            fflush(stdout);
             break;
         }
         if ((c == 127 || c == 8) && i > 0) { //backspace was pressed
@@ -129,7 +134,7 @@ static void listAppointments(int fd) {
     //read one record at a time and print it
     while (fread(&a, sizeof(a), 1, f) == 1) {
         char line[160];
-        //%-4d = left-aligned integer width 4, %-10s = left-aligned string width 10...
+        //%-4d = left-aligned integer width 4, %-10s = left-aligned string width 10, etc.
         snprintf(line, sizeof(line), "  %-4d %-10s  %-5s  %-20s  %s\r\n",
                  a.id, a.date, a.time, a.with, a.note);
         writeString(fd, line);
@@ -256,9 +261,14 @@ static void menuDelete(int fd) {
     waitEnter(fd);
 }
 
-//client session runs in a forked child process, one per connected user
-static void handleClient(int fd) {
+//client session — runs in a forked child process, one per connected user
+static void handle_client(int fd) {
     char ch[4]; //menu choice buffer
+
+    //tell the telnet client that the SERVER will handle echoing (IAC WILL ECHO)
+    //this turns off the client's local echo so characters aren't doubled
+    unsigned char will_echo[] = {255, 251, 1}; //IAC WILL ECHO
+    write(fd, will_echo, 3);
 
     while (1) {
         clearScreen(fd);
@@ -302,7 +312,7 @@ int main(void) {
     sfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sfd < 0) { perror("socket"); return 1; }
 
-    //allow reuse of the port immediately after a restart, mark as unused
+    //allow reuse of the port immediately after a restart
     setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     //bind to all interfaces on PORT
@@ -321,11 +331,11 @@ int main(void) {
         cfd = accept(sfd, NULL, NULL); //block until a client connects
         if (cfd < 0) continue;
         if (fork() == 0) {
-            //child, close the listening socket and handle this client
+            //child: close the listening socket and handle this client
             close(sfd);
-            handleClient(cfd);
+            handle_client(cfd);
         }
-        //parent, close our copy of the client socket and loop back to accept
+        //parent: close our copy of the client socket and loop back to accept
         close(cfd);
     }
 }
