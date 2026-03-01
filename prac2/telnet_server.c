@@ -53,6 +53,16 @@ static void readLine(int fd, char *buf, size_t sz) {
 
     //continue reading byte by byte
     while (read(fd, &c, 1) > 0) {
+
+        //telnet control sequences start with IAC (byte 255)
+        //they are 3 bytes long: IAC, command, option
+        //strip them so they don't appear as typed characters
+        if ((unsigned char)c == 255) {
+            char iac[2];
+            read(fd, iac, 2); //swallow the command and option bytes
+            continue;
+        }
+
         if (c == '\r') { //\r = carriage return, user pressed enter
             fd_set fds;
             FD_ZERO(&fds);
@@ -264,11 +274,6 @@ static void menuDelete(int fd) {
 //client session — runs in a forked child process, one per connected user
 static void handle_client(int fd) {
     char ch[4]; //menu choice buffer
-
-    //tell the telnet client that the SERVER will handle echoing (IAC WILL ECHO)
-    //this turns off the client's local echo so characters aren't doubled
-    unsigned char will_echo[] = {255, 251, 1}; //IAC WILL ECHO
-    write(fd, will_echo, 3);
 
     while (1) {
         clearScreen(fd);
