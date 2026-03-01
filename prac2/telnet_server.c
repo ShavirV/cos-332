@@ -2,7 +2,6 @@
  * Telnet Appointment Server
  * uses fork() for multi-user
  * single shared binary database, stored in appointments.db
- * ANSI UI
  */
 
 #include <stdio.h>
