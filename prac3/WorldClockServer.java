@@ -10,7 +10,7 @@ public class WorldClockServer{
 
     private static final int PORT = 55555;
 
-    //store capital city/continent pairs
+    //store capital city/zoneID pairs
     private static final Map<String, String> cities = new LinkedHashMap<>();
 
         static {
@@ -26,14 +26,17 @@ public class WorldClockServer{
 
         ServerSocket server = new ServerSocket(PORT);
         System.out.println("Server running on port " + PORT);
+        System.out.println("http://127.0.0.1:55555/clock");
 
         while (true){
             Socket client = server.accept();
-            handleClient(client);
+            new Thread (() -> handleClient(client)).start();
         }
     }
 
     public static void handleClient(Socket client){
+
+        String status = "200"; //start off with a valid request, update as needed
         try{
             BufferedReader in = new BufferedReader(new InputStreamReader((client.getInputStream())));
 
@@ -47,24 +50,77 @@ public class WorldClockServer{
                 return;
             }
 
-            //example request: GET /?city=Tokyo HTTP/1.1
-            String city = null;
+            //split requests more cleanly
+            StringTokenizer tokenizer = new StringTokenizer(requestLine);
 
-            if (requestLine.contains("?city=")){
-                int start = requestLine.indexOf("?city=") + 6;
-                int end = requestLine.indexOf(" ", start);
-                city = requestLine.substring(start, end);
+            //example request: GET /?city=Tokyo HTTP/1.1
+            String method = tokenizer.nextToken();
+            String path = tokenizer.nextToken();
+
+            //wait for input
+            while(in.readLine().length() != 0) {}
+
+//bonus marks here :D
+
+            //handle invalid request types, like POST
+            if(!method.equals("GET") && !method.equals("HEAD")){
+                status = "405"; //method not allowed
+
+                sendResponse(writer, 
+                    "405 Method Not Allowed",
+                    "<h1> 405 Method Not Allowed</h1> <h2>Stop poking around👀</h2>",
+                    method.equals("HEAD")
+                    );
+                log(client, requestLine, status);
+                client.close();
+                return;
             }
 
-            String html = buildPage(city);
+            //reroute "/" to the actual page
+            if (path.equals("/")){
+                status = "301"; //moved permanently 
 
-            writer.println("HTTP/1.1 200 OK");
-            writer.println("Content-Type: text/html");
-            writer.println("Connection: close");
-            writer.println();
-            writer.println(html);
+                writer.println("HTTP/1.1 301 (Moved Permanently)");
+                writer.println("LocationL: /clock");
+                writer.println("connection: close");
+                writer.flush();
 
-            writer.flush();
+                log(client, requestLine, status);
+                client.close();
+                return;
+            }
+
+            //handle regular requests
+            if(path.startsWith("/clock")){
+                String city = null;
+
+                //get city name 
+                if (path.contains("?city=")){
+                    city = path.substring(path.indexOf("?city=")+6); //actual start of city name
+                }
+
+                //invalid city
+                if (city != null && !cities.containsKey(city)){
+                    status = "404";
+
+                    sendResponse(writer,
+                        "404 Not Found",
+                        "<h1>404 - City not found.</h1>",
+                        method.equals("HEAD")
+                    );
+
+                    log(client, requestLine, status);
+                    client.close();
+                    return;
+                }
+
+                String html = buildPage(city);
+
+                sendResponse(writer, "200 OK", html, method.equals("HEAD"));
+
+                log(client, requestLine, status);
+            }
+
             client.close();
 
         } catch (Exception e){
@@ -121,4 +177,31 @@ public class WorldClockServer{
 
         return html.toString();
     }
+
+    private static void sendResponse(PrintWriter out, String status,
+                                     String body, boolean headOnly) {
+
+        out.println("HTTP/1.1 " + status);
+        out.println("Content-Type: text/html; charset=UTF-8");
+        out.println("Content-Length: " + body.getBytes().length);
+        out.println("Server: JavaWorldClock");
+        out.println("Connection: close");
+        out.println();
+
+        if(!headOnly)
+            out.println(body);
+
+        out.flush();
+    }
+
+    private static void log(Socket client, String request, String status) {
+
+        System.out.println(
+            client.getInetAddress().getHostAddress()
+            + " - \"" + request + "\" "
+            + status
+        );
+    }
+
+    
 }
