@@ -26,7 +26,7 @@ public class WorldClockServer{
 
         ServerSocket server = new ServerSocket(PORT);
         System.out.println("Server running on port " + PORT);
-        System.out.println("http://127.0.0.1:55555/clock");
+        System.out.println("http://127.0.0.1:55555/");
 
         while (true){
             Socket client = server.accept();
@@ -80,8 +80,8 @@ public class WorldClockServer{
             if (path.equals("/")){
                 status = "301"; //moved permanently 
 
-                writer.println("HTTP/1.1 301 (Moved Permanently)");
-                writer.println("LocationL: /clock");
+                writer.println("HTTP/1.1 301 Moved Permanently");
+                writer.println("Location: /clock");
                 writer.println("connection: close");
                 writer.flush();
 
@@ -105,7 +105,7 @@ public class WorldClockServer{
 
                     sendResponse(writer,
                         "404 Not Found",
-                        "<h1>404 - City not found.</h1>",
+                        "<h1>404 - City not found. Maybe its not real</h1>",
                         method.equals("HEAD")
                     );
 
@@ -128,8 +128,7 @@ public class WorldClockServer{
         }
     }
 
-    private static String buildPage(String city){
-        StringBuilder html = new StringBuilder();
+     private static String buildPage(String city){
 
         DateTimeFormatter formatter =
                 DateTimeFormatter.ofPattern("HH:mm:ss");
@@ -137,20 +136,22 @@ public class WorldClockServer{
         ZonedDateTime saTime =
                 ZonedDateTime.now(ZoneId.of("Africa/Johannesburg"));
 
+        StringBuilder html = new StringBuilder();
+
         html.append("<html>");
         html.append("<head>");
-        html.append("<title>World Clock</title>");
+        html.append("<title>World Cloc</title>");
         html.append("<meta http-equiv='refresh' content='1'>");
         html.append("</head>");
         html.append("<body>");
 
-        html.append("<h1>World Clock</h1>");
+        html.append("<h1>World Cloc</h1>");
 
         html.append("<h2>South Africa Time: ")
                 .append(saTime.format(formatter))
                 .append("</h2>");
 
-        if (city != null && cities.containsKey(city)) {
+        if(city != null) {
 
             ZonedDateTime cityTime =
                     ZonedDateTime.now(ZoneId.of(cities.get(city)));
@@ -164,19 +165,31 @@ public class WorldClockServer{
 
         html.append("<h3>Select a city:</h3>");
 
-        for (String c : cities.keySet()) {
-            html.append("<a href='/?city=")
+        for(String c : cities.keySet()) {
+            html.append("<a href='/clock?city=")
                     .append(c)
                     .append("'>")
                     .append(c)
                     .append("</a><br>");
         }
 
-        html.append("</body>");
-        html.append("</html>");
+        // Demo section to show HTTP features
+        html.append("<hr>");
+        html.append("<h3>HTTP Demo Links</h3>");
+
+        html.append("<a href='/'>Test 301 Redirect</a><br>");
+        html.append("<a href='/clock?city=Kottayam'>Test 404</a><br>");
+
+        html.append("<p>405 test (Method Not Allowed):</p>");
+        html.append("<form action='/clock' method='POST'>");
+        html.append("<input type='submit' value='Trigger 405'>");
+        html.append("</form>");
+
+        html.append("</body></html>");
 
         return html.toString();
     }
+
 
     private static void sendResponse(PrintWriter out, String status,
                                      String body, boolean headOnly) {
