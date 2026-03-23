@@ -1,17 +1,17 @@
 /*
- * HTTP Appointment Server  —  Practical Assignment 4
+ * HTTP Appointment Server   Practical Assignment 4
  *
  * Demonstrates HTTP/1.1 per RFC 2616:
  *   GET  with query-string parsing (?key=val&…, URL-decode)
  *   POST with multipart/form-data  (binary file upload, RFC 2046)
  *   Status lines: 200, 204, 302, 400, 403, 404, 405, 413
  *   Content-Type, Content-Length, Location, Connection, Cache-Control headers
- *   Binary image serving with magic-byte MIME sniffing
+ *   Binary image serving
  *   302 Post/Redirect/Get pattern (no duplicate-submit on F5)
  *   fork() per connection, SIGCHLD reaping
  *
- * Compile:  gcc -Wall -o appt_server appt_server.c
- * Run:      ./appt_server
+ * Compile:  gcc -Wall -o http_server http_server_2.c
+ * Run:      ./http_server
  * Browse:   http://localhost:8080/
  */
 
@@ -29,41 +29,37 @@
 #include <sys/stat.h>
 #include <signal.h>
 
-/* ── tunables ─────────────────────────────────────────────────────────── */
 #define PORT        8080
 #define DB_FILE     "appointments.db"
 #define IMG_DIR     "images"
 #define BACKLOG     20
 #define HDR_BUFSZ   8192
-#define MAX_BODY    (4*1024*1024)   /* 4 MB upload cap */
+#define MAX_BODY    (4*1024*1024)   //4 MB upload cap
 
-/* ══════════════════════════════════════════════════════════════════════
-   1. DATA MODEL
-   ══════════════════════════════════════════════════════════════════════ */
 
+//how each appointment is stored
 typedef struct {
     int  id;
-    char date[11];      /* YYYY-MM-DD\0  */
-    char time_s[6];     /* HH:MM\0       */
+    char date[11];      //YYYY-MM-DD\0 
+    char time_s[6];     //HH:MM\0
     char with_s[64];
     char note[128];
-    char img_ext[8];    /* ".jpg" / ".png" / "" if no image */
+    char img_ext[8];    // ".jpg" / ".png" / "" if no image 
 } Appointment;
 
-/* ══════════════════════════════════════════════════════════════════════
-   2. LOW-LEVEL I/O
-   ══════════════════════════════════════════════════════════════════════ */
+//io operations
 
 static void send_all(int fd, const void *buf, size_t len) {
     const char *p = buf;
     while (len) {
         ssize_t n = write(fd, p, len);
         if (n <= 0) return;
-        p += n; len -= (size_t)n;
+        p += n; 
+        len -= (size_t)n;
     }
 }
 
-/* Read until \r\n\r\n appears (end of HTTP headers). */
+// Read until \r\n\r\n appears (carriage return)
 static int read_headers(int fd, char *buf, int bufsz) {
     int total = 0;
     while (total < bufsz - 1) {
@@ -96,9 +92,6 @@ static char *read_body(int fd, size_t need, const char *pre, size_t already) {
     return body;
 }
 
-/* ══════════════════════════════════════════════════════════════════════
-   3. URL DECODE
-   ══════════════════════════════════════════════════════════════════════ */
 
 static void url_decode(const char *src, char *dst, size_t dstsz) {
     size_t di = 0;
@@ -139,42 +132,18 @@ static void get_param(const char *qs, const char *name, char *out, size_t outsz)
     }
 }
 
-/* ══════════════════════════════════════════════════════════════════════
-   4. MULTIPART/FORM-DATA PARSER  (RFC 2046 §5.1)
-   ══════════════════════════════════════════════════════════════════════
-
-   A multipart body looks like:
-
-     --boundary\r\n
-     Content-Disposition: form-data; name="date"\r\n
-     \r\n
-     2025-06-15\r\n
-     --boundary\r\n
-     Content-Disposition: form-data; name="photo"; filename="me.jpg"\r\n
-     Content-Type: image/jpeg\r\n
-     \r\n
-     <binary JPEG bytes>
-     --boundary--\r\n
-
-   We scan for each boundary delimiter, parse the mini-headers of each
-   part to find the field name / filename / content-type, then record
-   a pointer and length into the raw body buffer for the part's data.
-   No copying of image bytes is needed — we pass the pointer straight
-   to fwrite().
-   ══════════════════════════════════════════════════════════════════════ */
-
+//form parser
 typedef struct {
     char   name[64];
     char   filename[128];
     char   content_type[64];
-    char  *data;        /* points into the body buffer — not separately alloc'd */
+    char  *data;     
     size_t data_len;
 } MpPart;
 
 #define MAX_PARTS 16
 typedef struct { MpPart parts[MAX_PARTS]; int count; } Multipart;
 
-/* Extract boundary string from Content-Type header value. */
 static int parse_boundary(const char *ct, char *out, size_t outsz) {
     const char *p = strstr(ct, "boundary=");
     if (!p) return 0;
@@ -210,17 +179,17 @@ static void parse_multipart(char *body, size_t body_len,
                               const char *boundary, Multipart *mp) {
     mp->count = 0;
 
-    /* delimiter we search for between parts: \r\n--boundary */
+    // delimiter we search for between parts: \r\n--boundary
     char delim[256];
     snprintf(delim, sizeof(delim), "\r\n--%s", boundary);
     size_t dlen = strlen(delim);
 
-    /* the body starts with --boundary\r\n  (no leading \r\n) */
+    // the body starts with --boundary\r\n  (no leading \r\n)
     char first[256];
     snprintf(first, sizeof(first), "--%s\r\n", boundary);
     char *pos = memmem(body, body_len, first, strlen(first));
     if (!pos) return;
-    pos += strlen(first);   /* pos now at first part's headers */
+    pos += strlen(first);   // pos now at first part's headers
 
     while (mp->count < MAX_PARTS) {
         /* find end of this part's headers */
@@ -272,14 +241,7 @@ static MpPart *mp_find(Multipart *mp, const char *name) {
     return NULL;
 }
 
-/* ══════════════════════════════════════════════════════════════════════
-   5. MIME SNIFFING
-   ══════════════════════════════════════════════════════════════════════
-
-   We identify image format from magic bytes rather than trusting the
-   browser-supplied Content-Type, which can be spoofed or wrong.
-   ══════════════════════════════════════════════════════════════════════ */
-
+//identify mime by using 'magic bytes' since actual type can be spoofed or incorrect
 static const char *sniff_mime(const char *d, size_t len) {
     if (len>=3 &&
         (unsigned char)d[0]==0xFF &&
@@ -309,10 +271,6 @@ static const char *mime_to_ext(const char *mime) {
     if (strstr(mime,"webp")) return ".webp";
     return "";
 }
-
-/* ══════════════════════════════════════════════════════════════════════
-   6. DATABASE
-   ══════════════════════════════════════════════════════════════════════ */
 
 static int count_appointments(void) {
     FILE *f = fopen(DB_FILE, "rb");
@@ -362,9 +320,6 @@ static Appointment *db_load_all(int *count) {
     return arr;
 }
 
-/* ══════════════════════════════════════════════════════════════════════
-   7. HTTP RESPONSE HELPERS
-   ══════════════════════════════════════════════════════════════════════ */
 
 static void http_response(int fd,
                            const char *status, const char *ctype,
@@ -394,9 +349,6 @@ static void http_redirect(int fd, const char *loc) {
     send_all(fd, hdr, (size_t)hl);
 }
 
-/* ══════════════════════════════════════════════════════════════════════
-   8. GROWABLE STRING BUFFER
-   ══════════════════════════════════════════════════════════════════════ */
 
 typedef struct { char *data; size_t len, cap; } StrBuf;
 
@@ -511,9 +463,6 @@ static const char *CSS =
 "footer{text-align:center;color:var(--dim);font-size:.65rem;letter-spacing:.08em;padding:30px}"
 "</style>";
 
-/* ══════════════════════════════════════════════════════════════════════
-   10. PAGE CHROME
-   ══════════════════════════════════════════════════════════════════════ */
 
 static void page_header(StrBuf *sb, const char *active) {
     sb_append(sb,
@@ -556,10 +505,6 @@ static void page_footer(StrBuf *sb) {
         "<footer>HTTP/1.1 APPOINTMENT SERVER THING &middot; COS332 PRACTICAL 4</footer>"
         "</body></html>");
 }
-
-/* ══════════════════════════════════════════════════════════════════════
-   11. PAGE BUILDERS
-   ══════════════════════════════════════════════════════════════════════ */
 
 static void build_home(StrBuf *sb, const char *ok, const char *err) {
     page_header(sb, "/");
@@ -616,8 +561,8 @@ static void build_add_form(StrBuf *sb, const char *err) {
     if (err && *err) sb_appendf(sb,"<div class='er'>&#10007; %s</div>",err);
 
     /*
-     * enctype="multipart/form-data"  —  required for binary file upload.
-     * method="post"  —  file bytes go in the request body, not the URL.
+     * enctype="multipart/form-data"   required for binary file upload.
+     * method="post"   file bytes go in the request body, not the URL.
      * Without multipart encoding the browser would try to URL-encode the
      * binary data and corrupt it.
      */
@@ -714,17 +659,13 @@ static void build_404(StrBuf *sb) {
     page_footer(sb);
 }
 
-/* ══════════════════════════════════════════════════════════════════════
-   12. HTTP REQUEST PARSER
-   ══════════════════════════════════════════════════════════════════════ */
-
 typedef struct {
     char   method[8];
     char   path[256];
     char   qs[1024];
     char   content_type[256];
     long   content_length;
-    char  *body_pre;    /* pointer into hdr_buf just past \r\n\r\n */
+    char  *body_pre;    //pointer into hdr_buf just past \r\n\r\n 
     size_t body_pre_len;
 } Request;
 
@@ -776,10 +717,6 @@ static int parse_request(char *buf, int total, Request *req) {
     return 0;
 }
 
-/* ══════════════════════════════════════════════════════════════════════
-   13. ROUTE HANDLERS
-   ══════════════════════════════════════════════════════════════════════ */
-
 /*
  * GET /img/<id><ext>
  *
@@ -812,7 +749,7 @@ static void serve_image(int fd, const char *path) {
     const char *mime=sniff_mime(img,(size_t)sz);
     if(!mime) mime="application/octet-stream";
 
-    /* Cache-Control lets the browser cache the image for 1 hour */
+    // Cache-Control lets the browser cache the image for 1 hour 
     http_response(fd,"200 OK",mime,"Cache-Control: max-age=3600\r\n",img,(size_t)sz);
     free(img);
 }
@@ -872,7 +809,7 @@ static void handle_post_add(int fd, Request *req) {
     if(pn&&pn->data_len){ CP(a.note,pn); }
 #undef CP
 
-    /* optional image */
+    //optional image
     if (pp && pp->data_len > 0) {
         const char *mime=sniff_mime(pp->data,pp->data_len);
         if (!mime) {
@@ -901,9 +838,7 @@ static void handle_post_add(int fd, Request *req) {
     http_redirect(fd,"/?ok=Appointment+saved.");
 }
 
-/*
- * POST /delete  (id field in application/x-www-form-urlencoded body)
- */
+// POST /delete  (id field in application/x-www-form-urlencoded body)
 static void handle_post_delete(int fd, Request *req) {
     long cl=req->content_length;
     if(cl<0)cl=0; if(cl>256)cl=256;
@@ -914,10 +849,6 @@ static void handle_post_delete(int fd, Request *req) {
     if(id>0){ db_delete(id); http_redirect(fd,"/?ok=Appointment+deleted."); }
     else     { http_redirect(fd,"/?err=Invalid+ID."); }
 }
-
-/* ══════════════════════════════════════════════════════════════════════
-   14. CLIENT SESSION  (runs in forked child)
-   ══════════════════════════════════════════════════════════════════════ */
 
 static void handle_client(int fd) {
     char hdr_buf[HDR_BUFSZ];
@@ -975,14 +906,14 @@ static void handle_client(int fd) {
         }
 
     } else {
-        /* RFC 2616 §10.4.6 — 405 Must include Allow header */
+        //RFC 2616 §10.4.6 - 405 Must include Allow header
         http_response(fd,"405 Method Not Allowed","text/plain",
                       "Allow: GET, POST\r\n","Method not allowed",18);
     }
 
     free(sb.data);
     /* shutdown the write half so the OS flushes the send buffer
-     * before we exit — prevents the client receiving RST instead of FIN */
+     * before we exit prevents the client receiving RST instead of FIN */
     shutdown(fd, SHUT_WR);
     close(fd);
     exit(0);
