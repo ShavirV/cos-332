@@ -3,17 +3,12 @@ import java.net.*;
 import java.util.*;
 
 /**
- * ldap client that communicates with an ldap server on port 389 using raw tcp sockets.
- * implements ldap v3 as defined in rfc 4511, encoding all messages manually using ber/der.
- * supports: bind (simple auth), search, unbind, and basic response parsing.
- *
- * directory information tree assumed:
+ * directory information tree:
  *   dc=example,dc=com
  *     ou=Automobiles
  *       cn=Ferrari  (maxSpeed: 320)
  *       cn=Bugatti  (maxSpeed: 431)
- *       ...
- *
+ *       ....
  * each asset entry uses objectClass=top,organizationalRole (or a custom class)
  * with a 'description' attribute carrying the max speed value in km/h.
  * alternatively, if a custom schema is loaded, a dedicated 'maxSpeed' attribute is used.
@@ -30,12 +25,13 @@ public class LDAPClient {
     private static final int TAG_BOOLEAN         = 0x01;
     private static final int TAG_INTEGER         = 0x02;
     private static final int TAG_OCTET_STRING    = 0x04;
+    private static final int TAG_NULL            = 0x05;
     private static final int TAG_ENUMERATED      = 0x0A;
-    private static final int TAG_SEQUENCE        = 0x30; //constructed
-    private static final int TAG_SET             = 0x31; //constructed
+    private static final int TAG_SEQUENCE        = 0x30; 
+    private static final int TAG_SET             = 0x31; 
 
     //ldap application-class tags (class = application, constructed unless noted)
-    //per rfc 4511 appendix b
+    //rfc 4511 appendix b
     private static final int TAG_BIND_REQUEST    = 0x60; //app 0, constructed
     private static final int TAG_BIND_RESPONSE   = 0x61; //app 1, constructed
     private static final int TAG_UNBIND_REQUEST  = 0x42; //app 2, primitive
@@ -63,9 +59,6 @@ public class LDAPClient {
     //message id counter; each request gets a unique id
     private int messageId = 0;
 
-    //--------------------------------------------------------------------
-    // main entry point
-    //--------------------------------------------------------------------
     public static void main(String[] args) throws Exception {
         //parse arguments
         if (args.length < 6) {
@@ -153,10 +146,7 @@ public class LDAPClient {
             client.disconnect();
         }
     }
-
-    //--------------------------------------------------------------------
     // connection management
-    //--------------------------------------------------------------------
 
     //opens a plain tcp socket to the ldap server
     public void connect(String host, int port) throws IOException {
@@ -173,24 +163,9 @@ public class LDAPClient {
         } catch (IOException ignored) {}
     }
 
-    //--------------------------------------------------------------------
-    // ldap bind (rfc 4511 section 4.2)
-    //--------------------------------------------------------------------
+    //ldap bind (rfc 4511 section 4.2)
 
-    /**
-     * sends a simple bind request and returns the ldap result code.
-     * simple authentication sends the password in cleartext.
-     * the bind request message structure per rfc 4511:
-     *   BindRequest ::= [APPLICATION 0] SEQUENCE {
-     *     version   INTEGER (1..127),
-     *     name      LDAPDN,
-     *     authentication  AuthenticationChoice
-     *   }
-     *   AuthenticationChoice ::= CHOICE {
-     *     simple  [0] OCTET STRING,  -- 0-based context tag, primitive
-     *     ...
-     *   }
-     */
+   //simple bind request and return status code
     public int sendBindRequest(String dn, String password) throws IOException {
         int msgId = ++messageId;
 
@@ -244,48 +219,23 @@ public class LDAPClient {
         return parseLDAPResult(bindRespContent);
     }
 
-    //--------------------------------------------------------------------
-    // ldap unbind (rfc 4511 section 4.3)
-    //--------------------------------------------------------------------
-
-    /**
-     * sends an unbind request to the server.
-     * the unbind request is a primitive (not a sequence) with no content.
-     * it signals that the client is done and will close the connection.
-     *   UnbindRequest ::= [APPLICATION 2] NULL
-     */
+    //the unbind request is a primitive (not a sequence) with no content.
     public void sendUnbindRequest() throws IOException {
         int msgId = ++messageId;
-        //unbind request has null body
-        byte[] unbindReq = wrapTLV(TAG_UNBIND_REQUEST, new byte[0]);
+
+        //correct: unbind must contain NULL
+        ByteArrayOutputStream nullVal = new ByteArrayOutputStream();
+        appendTLV(nullVal, TAG_NULL, new byte[0]);
+
+        byte[] unbindReq = wrapTLV(TAG_UNBIND_REQUEST, nullVal.toByteArray());
         byte[] ldapMsg   = buildLDAPMessage(msgId, unbindReq);
+
         out.write(ldapMsg);
         out.flush();
         System.out.println("[*] unbind request sent (msgId=" + msgId + ")");
-        //no response is expected after unbind
     }
 
-    //--------------------------------------------------------------------
-    // ldap search (rfc 4511 section 4.5)
-    //--------------------------------------------------------------------
-
-    /**
-     * sends a search request and collects all searchresultentry messages.
-     * search request structure per rfc 4511:
-     *   SearchRequest ::= [APPLICATION 3] SEQUENCE {
-     *     baseObject   LDAPDN,
-     *     scope        ENUMERATED { baseObject(0), singleLevel(1), wholeSubtree(2) },
-     *     derefAliases ENUMERATED { neverDerefAliases(0), ... },
-     *     sizeLimit    INTEGER,
-     *     timeLimit    INTEGER,
-     *     typesOnly    BOOLEAN,
-     *     filter       Filter,
-     *     attributes   AttributeSelection
-     *   }
-     *
-     * we construct an equalityMatch filter: (cn=<assetName>)
-     * and request specific attributes by name.
-     */
+//ldap search
     public List<Map<String, List<String>>> sendSearchRequest(
             String baseDN, String assetName, String[] requestedAttrs) throws IOException {
 
@@ -296,16 +246,16 @@ public class LDAPClient {
         //base object dn
         appendTLV(payload, TAG_OCTET_STRING, baseDN.getBytes("UTF-8"));
 
-        //scope: wholeSubtree(2) to search all levels under baseDN
+        //scope, wholeSubtree(2) to search all levels under baseDN
         appendTLV(payload, TAG_ENUMERATED, encodeInteger(2));
 
-        //derefAliases: neverDerefAliases(0)
+        //derefAliases, neverDerefAliases(0)
         appendTLV(payload, TAG_ENUMERATED, encodeInteger(0));
 
-        //sizeLimit: 0 = no limit
+        //sizeLimit 0 = no limit
         appendTLV(payload, TAG_INTEGER, encodeInteger(0));
 
-        //timeLimit: 0 = no limit
+        //timeLimit0 = no limit
         appendTLV(payload, TAG_INTEGER, encodeInteger(0));
 
         //typesOnly: false (we want values, not just attribute type names)
@@ -318,8 +268,12 @@ public class LDAPClient {
 
         //attributes: sequence of octet strings naming desired attributes
         ByteArrayOutputStream attrList = new ByteArrayOutputStream();
-        for (String attr : requestedAttrs) {
-            appendTLV(attrList, TAG_OCTET_STRING, attr.getBytes("UTF-8"));
+        if (requestedAttrs.length == 0) {
+            appendTLV(attrList, TAG_OCTET_STRING, "*".getBytes("UTF-8"));
+        } else {
+            for (String attr : requestedAttrs) {
+                appendTLV(attrList, TAG_OCTET_STRING, attr.getBytes("UTF-8"));
+            }
         }
         appendTLV(payload, TAG_SEQUENCE, attrList.toByteArray());
 
@@ -395,19 +349,7 @@ public class LDAPClient {
         return entries;
     }
 
-    /**
-     * parses a searchresultentry pdu.
-     * structure (rfc 4511 section 4.5.2):
-     *   SearchResultEntry ::= [APPLICATION 4] SEQUENCE {
-     *     objectName LDAPDN,
-     *     attributes PartialAttributeList
-     *   }
-     *   PartialAttributeList ::= SEQUENCE OF PartialAttribute
-     *   PartialAttribute ::= SEQUENCE {
-     *     type   AttributeDescription,
-     *     vals   SET OF AttributeValue
-     *   }
-     */
+    //search result entry pdu
     private Map<String, List<String>> parseSearchResultEntry(byte[] content) throws IOException {
         Map<String, List<String>> entry = new LinkedHashMap<>();
 
@@ -449,9 +391,7 @@ public class LDAPClient {
         return entry;
     }
 
-    //--------------------------------------------------------------------
-    // ldap result code parsing (rfc 4511 section 4.1.9)
-    //--------------------------------------------------------------------
+//code parsing
 
     /**
      * parses an ldapresult structure:
@@ -477,6 +417,15 @@ public class LDAPClient {
         p.expectTag(TAG_OCTET_STRING);
         String diagMsg = new String(p.readLength(), "UTF-8");
 
+        //optional referral 3
+        if (p.hasMore()) {
+            int tag = p.peekTag();
+            if (tag == 0xA3) {
+                p.expectTag(0xA3);
+                p.readLength(); //ignore referral content
+            }
+        }
+
         if (resultCode != RESULT_SUCCESS) {
             System.err.println("[!] ldap result code=" + resultCode
                     + " matchedDN='" + matchedDN + "' msg='" + diagMsg + "'");
@@ -484,18 +433,7 @@ public class LDAPClient {
         return resultCode;
     }
 
-    //--------------------------------------------------------------------
-    // ber/der filter construction helpers
-    //--------------------------------------------------------------------
-
-    /**
-     * builds an equalityMatch filter ber encoding.
-     * equalityMatch [APPLICATION 3] SEQUENCE {
-     *   attributeDesc  OCTET STRING,
-     *   assertionValue OCTET STRING
-     * }
-     * rfc 4511 section 4.5.1 defines the filter choices.
-     */
+    //ewuity match filter, ber encoding
     private byte[] buildEqualityFilter(String attrDesc, String assertionValue) throws IOException {
         ByteArrayOutputStream seq = new ByteArrayOutputStream();
         appendTLV(seq, TAG_OCTET_STRING, attrDesc.getBytes("UTF-8"));
@@ -503,20 +441,12 @@ public class LDAPClient {
         return wrapTLV(TAG_FILTER_EQUAL, seq.toByteArray());
     }
 
-    /**
-     * builds a present filter: checks that an attribute exists.
-     * present [7] IMPLICIT OCTET STRING  (primitive, context class)
-     * useful for checking e.g. (cn=*)
-     */
     @SuppressWarnings("unused")
     private byte[] buildPresentFilter(String attrDesc) throws IOException {
         return wrapTLV(TAG_FILTER_PRESENT, attrDesc.getBytes("UTF-8"));
     }
 
-    /**
-     * builds an and filter combining two sub-filters.
-     * and [0] SET OF Filter
-     */
+    //and filter combining two sub filters
     @SuppressWarnings("unused")
     private byte[] buildAndFilter(byte[]... subFilters) throws IOException {
         ByteArrayOutputStream set = new ByteArrayOutputStream();
@@ -524,20 +454,9 @@ public class LDAPClient {
         return wrapTLV(TAG_FILTER_AND, set.toByteArray());
     }
 
-    //--------------------------------------------------------------------
-    // ldap message framing (rfc 4511 section 4.1.1)
-    //--------------------------------------------------------------------
+    // ldap message framing
 
-    /**
-     * wraps a request pdu into a complete ldap message sequence.
-     *   LDAPMessage ::= SEQUENCE {
-     *     messageID  MessageID,
-     *     protocolOp CHOICE { ... },
-     *     controls   [0] Controls OPTIONAL
-     *   }
-     * controls are omitted for simplicity but the rfc allows them for
-     * extensions like paged results, sorting, etc.
-     */
+    // wraps a request pdu into a complete ldap message sequence.
     private byte[] buildLDAPMessage(int msgId, byte[] protocolOp) throws IOException {
         ByteArrayOutputStream content = new ByteArrayOutputStream();
         appendTLV(content, TAG_INTEGER, encodeInteger(msgId));
@@ -545,16 +464,10 @@ public class LDAPClient {
         return wrapTLV(TAG_SEQUENCE, content.toByteArray());
     }
 
-    //--------------------------------------------------------------------
-    // raw tcp read helpers
-    //--------------------------------------------------------------------
+//helpers for raw tcp reading 
 
-    /**
-     * reads exactly one complete ldap message from the input stream.
-     * ldap messages are ber-encoded sequences; we read the tag and length
-     * first, then read exactly that many value bytes.
-     * this is critical: we must not over-read or under-read.
-     */
+    //reads exactly one complete ldap message from the input stream.
+    //read tag and len first so as not to over or under read
     private byte[] readLDAPMessage() throws IOException {
         //read the outer tag (should always be 0x30 = SEQUENCE for ldap messages)
         int tagByte = in.read();
@@ -602,9 +515,7 @@ public class LDAPClient {
         return full.toByteArray();
     }
 
-    //--------------------------------------------------------------------
     // ber/der encoding utilities
-    //--------------------------------------------------------------------
 
     //appends a tlv (tag-length-value) triple to the given stream
     private void appendTLV(ByteArrayOutputStream out, int tag, byte[] value) throws IOException {
@@ -652,7 +563,7 @@ public class LDAPClient {
             result[i] = (byte)(value & 0xFF);
             value >>= 8;
         }
-        //ber signed integer: if high bit of first byte is set, prepend 0x00 to avoid sign confusion
+        //ber signed int, if high bit of first byte is set, prepend 0x00 to avoid sign confusion
         if ((result[0] & 0x80) != 0) {
             byte[] padded = new byte[result.length + 1];
             padded[0] = 0x00;
@@ -668,12 +579,16 @@ public class LDAPClient {
         for (byte b : bytes) {
             value = (value << 8) | (b & 0xFF);
         }
+
+        //handle signed values (BER integers are signed)
+        if ((bytes[0] & 0x80) != 0) {
+            value -= (1 << (bytes.length * 8));
+        }
+
         return value;
     }
 
-    //--------------------------------------------------------------------
-    // ldap result code to human-readable string (rfc 4511 appendix a)
-    //--------------------------------------------------------------------
+    // ldap result code to human-readable string (rfc 4511 app a
     private static String resultCodeToString(int code) {
         switch (code) {
             case 0:  return "success";
@@ -704,16 +619,11 @@ public class LDAPClient {
         }
     }
 
-    //--------------------------------------------------------------------
-    // inner class: ber parser for reading response bytes
-    //--------------------------------------------------------------------
+    //INNER CLASS- ber parser for reading response bytes
 
-    /**
-     * stateful ber byte-stream parser.
-     * tracks current position and provides methods to expect tags and read
-     * length-prefixed value bytes, matching the ber structure defined in
-     * itu-t x.690 (referenced by ldap via rfc 4511).
-     */
+
+     //stateful ber byte-stream parser tracks current position and provides methods to expect tags and read
+     //length-prefixed value bytes
     static class BerParser {
         private final byte[] data;
         private int pos;

@@ -1,0 +1,15 @@
+dn: ou=Automobiles,dc=example,dc=com
+objectClass: organizationalUnit
+ou: Automobiles
+
+dn: cn=Ferrari,ou=Automobiles,dc=example,dc=com
+objectClass: top
+objectClass: organizationalRole
+cn: Ferrari
+description: 320
+
+dn: cn=Bugatti,ou=Automobiles,dc=example,dc=com
+objectClass: top
+objectClass: organizationalRole
+cn: Bugatti
+description: 431
