@@ -82,7 +82,7 @@ public class LDAPClient {
             System.out.println("[*] connected");
 
             //step 2: send a bind request to authenticate
-            //simple bind sends credentials as plaintext (acceptable for this assignment)
+            //simple bind sends credentials as plaintext
             System.out.println("[*] binding as: " + bindDN);
             int bindResult = client.sendBindRequest(bindDN, password);
             if (bindResult != RESULT_SUCCESS) {

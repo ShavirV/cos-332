@@ -1,0 +1,11 @@
+docker exec -it ldap-server ldapsearch `
+  -x `
+  -D "cn=admin,dc=example,dc=com" `
+  -w secret `
+  -b "ou=Automobiles,dc=example,dc=com" `
+  "(cn=Ferrari)" `
+  cn description maxSpeed
+
+java -jar prac5.jar localhost 389 "cn=admin,dc=example,dc=com" secret "ou=Automobiles,dc=example,dc=com" Ferrari
+
+java -jar prac5.jar localhost 389 "cn=admin,dc=example,dc=com" secret "ou=Automobiles,dc=example,dc=com" MadeUpThing
