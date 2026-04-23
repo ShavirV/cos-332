@@ -7,7 +7,6 @@ echo "Prac 7"
 JAVA_FILE="VacationResponder.java"
 CLASS_NAME="VacationResponder"
 
-# FIX: correct GreenMail ports
 SMTP_PORT=3025
 POP3_PORT=3110
 
@@ -15,22 +14,41 @@ TEST_SENDER1="alice@localhost"
 TEST_SENDER2="bob@localhost"
 TARGET="me@localhost"
 
-echo "Starting GreenMail"
+echo "Starting GreenMail..."
 
-# FIX 1: ensure jar exists
+# Ensure jar exists
 if [ ! -f greenmail-standalone-2.0.0.jar ]; then
     echo "Downloading GreenMail..."
     wget https://repo1.maven.org/maven2/com/icegreen/greenmail-standalone/2.0.0/greenmail-standalone-2.0.0.jar
 fi
 
-# FIX 2: background process + correct JVM flags placement
-java -Dgreenmail.setup.test.all \
+# Start GreenMail (visible output for debugging)
+java -Dgreenmail.setup.test.smtp \
+     -Dgreenmail.setup.test.pop3 \
      -Dgreenmail.users=me@localhost:password \
-     -jar greenmail-standalone-2.0.0.jar > /dev/null 2>&1 &
-
+     -jar greenmail-standalone-2.0.0.jar &
 GM_PID=$!
-sleep 3
 
+# ---- WAIT FOR POP3 PORT ----
+echo "Waiting for POP3 server on port $POP3_PORT..."
+
+for i in {1..10}; do
+    if (echo > /dev/tcp/localhost/$POP3_PORT) >/dev/null 2>&1; then
+        echo "POP3 is ready."
+        break
+    fi
+    echo "Waiting... ($i)"
+    sleep 1
+done
+
+# Final check
+if ! (echo > /dev/tcp/localhost/$POP3_PORT) >/dev/null 2>&1; then
+    echo "ERROR: POP3 server never started"
+    kill $GM_PID || true
+    exit 1
+fi
+
+echo "Compiling Java..."
 javac $JAVA_FILE
 
 echo "Sending test emails..."
@@ -50,16 +68,12 @@ send_mail() {
     } > /dev/tcp/localhost/$SMTP_PORT
 }
 
-# valid mail
+# Test cases
 send_mail "$TEST_SENDER1" "prac7"
-
-# duplicate sender
 send_mail "$TEST_SENDER1" "prac7"
-
-# wrong subject
 send_mail "$TEST_SENDER2" "hello"
 
-# mailing list
+# Mailing list case
 {
     echo "HELO localhost"
     echo "MAIL FROM:<list@localhost>"
@@ -74,14 +88,17 @@ send_mail "$TEST_SENDER2" "hello"
     echo "QUIT"
 } > /dev/tcp/localhost/$SMTP_PORT
 
-echo "running vacation responder"
+echo "Running vacation responder..."
 
-java $CLASS_NAME &
+# Run responder but reduce spam
+java $CLASS_NAME 2>&1 | awk '!seen[$0]++' &
 RESPONDER_PID=$!
 
+# Let it run
 sleep 10
 
+echo "Stopping processes..."
 kill $RESPONDER_PID || true
 kill $GM_PID || true
 
-echo "Everything ran"
+echo "Done."
